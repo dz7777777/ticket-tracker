@@ -1,0 +1,40 @@
+name: Parse Ticket Email
+on:
+  repository_dispatch:
+    types: [parse-email]
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Parse and save
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EMAIL_BODY: ${{ toJSON(github.event.client_payload.body) }}
+        run: |
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "content-type: application/json" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -d "{\"model\":\"claude-haiku-4-5-20251001\",\"max_tokens\":1000,\"system\":\"Extract ticket purchase info and return ONLY a JSON array. Each object must have these exact keys: Event Date (M/D/YYYY), Artist, Venue, Cost (number per ticket before fees), Quantity (number), Total Cost (final total including all fees), Total Revenue (empty string), Profit (empty string), Return (empty string), Day (Mon/Tue/Wed/Thu/Fri/Sat/Sun), Comment (order ID only). Return ONLY valid JSON array, no other text.\",\"messages\":[{\"role\":\"user\",\"content\":$EMAIL_BODY}]}")
+
+          python3 << 'PYEOF'
+          import json, re, os, sys
+          response = json.loads(os.environ.get('RESPONSE', '{}'))
+          text = response.get('content', [{}])[0].get('text', '[]')
+          match = re.search(r'\[.*\]', text, re.DOTALL)
+          new_events = json.loads(match.group(0)) if match else []
+          try:
+            existing = json.load(open('data/events.json'))
+          except:
+            existing = []
+          json.dump(existing + new_events, open('data/events.json', 'w'), indent=2)
+          print(f"Added {len(new_events)} events")
+          PYEOF
+
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add data/events.json
+          git commit -m "Add $(date +%Y-%m-%d) ticket events" || echo "No changes"
+          git push
